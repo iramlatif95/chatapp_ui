@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Group Chat App</title>
+
+<style>
+body{
+  margin:0;
+  font-family:Arial, sans-serif;
+  background:#f2f2f2;
+}
+
+/* Main Box */
+.container{
+  width:1000px;
+  height:600px;
+  margin:40px auto;
+  background:#fff;
+  display:flex;
+  border-radius:8px;
+  overflow:hidden;
+  box-shadow:0 0 10px rgba(0,0,0,0.2);
+}
+
+/* ================= SIDEBAR ================= */
+
+.sidebar{
+  width:250px;
+  background:#fafafa;
+  border-right:1px solid #ddd;
+  display:flex;
+  flex-direction:column;
+}
+
+.sidebar h2{
+  margin:0;
+  padding:12px;
+  text-align:center;
+  border-bottom:1px solid #ddd;
+}
+
+/* Create Group */
+.create-box{
+  display:flex;
+  padding:8px;
+  gap:5px;
+  border-bottom:1px solid #ddd;
+}
+
+.create-box input{
+  flex:1;
+  padding:5px;
+}
+
+.create-box button{
+  background:#007bff;
+  color:white;
+  border:none;
+  padding:5px 10px;
+  cursor:pointer;
+  border-radius:3px;
+}
+
+/* Group List */
+.group-list{
+  flex:1;
+  overflow-y:auto;
+}
+
+/* Group Item */
+.group-item{
+  padding:10px;
+  border-bottom:1px solid #eee;
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  cursor:pointer;
+}
+
+.group-item:hover{
+  background:#f0f0f0;
+}
+
+.group-item.active{
+  background:#007bff;
+  color:white;
+}
+
+/* Join Button */
+.join-btn{
+  background:green;
+  color:white;
+  border:none;
+  padding:3px 6px;
+  font-size:12px;
+  border-radius:3px;
+  cursor:pointer;
+}
+
+/* ================= CHAT ================= */
+
+.chat-area{
+  flex:1;
+  display:flex;
+  flex-direction:column;
+}
+
+.messages{
+  flex:1;
+  background:#f9f9f9;
+  padding:10px;
+  overflow-y:auto;
+}
+
+.message{
+  margin-bottom:8px;
+  position:relative;
+  padding-right:70px;
+}
+
+/* Delete Button */
+.delete-btn{
+  position:absolute;
+  right:5px;
+  top:50%;
+  transform:translateY(-50%);
+  background:red;
+  color:white;
+  border:none;
+  padding:3px 6px;
+  border-radius:3px;
+  font-size:12px;
+  cursor:pointer;
+}
+
+/* Deleted Message */
+.deleted{
+  color:gray;
+  font-style:italic;
+}
+
+/* ================= FORM ================= */
+
+form{
+  display:flex;
+  padding:10px;
+  border-top:1px solid #ddd;
+}
+
+form input{
+  flex:1;
+  padding:8px;
+}
+
+form button{
+  padding:8px 15px;
+  margin-left:10px;
+}
+
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+<!-- ============ SIDEBAR ============ -->
+<div class="sidebar">
+
+  <h2>Groups</h2>
+
+  <!-- Create Group -->
+  <div class="create-box">
+
+    <input
+      type="text"
+      id="newGroupName"
+      placeholder="New group name"
+    >
+
+    <button id="createGroupBtn">+</button>
+
+  </div>
+
+  <!-- Groups -->
+  <div id="groupList" class="group-list">
+    Loading...
+  </div>
+
+</div>
+
+
+<!-- ============ CHAT AREA ============ -->
+<div class="chat-area">
+
+  <div id="messages" class="messages">
+    Select a group
+  </div>
+
+  <form id="messageForm">
+
+    <input
+      type="text"
+      id="messageText"
+      placeholder="Type message..."
+      required
+    >
+
+    <button type="submit">Send</button>
+
+  </form>
+
+</div>
+
+</div>
+
+<script>
+
+/* ================= CONFIG ================= */
+
+const backend = "http://127.0.0.1:8000";
+
+const groupAPI   = `${backend}/groupchat/groups/`;
+const messageAPI = `${backend}/groupchat/groupmessages/`;
+
+let currentGroupId = null;
+let currentUser    = null;
+let refreshTimer   = null;
+
+
+/* ================= CSRF ================= */
+
+function getCookie(name){
+
+  let value = null;
+
+  if(document.cookie){
+
+    document.cookie.split(";").forEach(c=>{
+
+      c = c.trim();
+
+      if(c.startsWith(name+"=")){
+        value = decodeURIComponent(c.substring(name.length+1));
+      }
+
+    });
+  }
+
+  return value;
+}
+
+const csrftoken = getCookie("csrftoken");
+
+
+/* ================= CURRENT USER ================= */
+
+async function getCurrentUser(){
+
+  const res = await fetch(`${backend}/chat/current_user/`,{
+    credentials:"include"
+  });
+
+  if(!res.ok){
+    alert("Please login first");
+    return;
+  }
+
+  const data = await res.json();
+
+  currentUser = data.username;
+}
+
+
+/* ================= LOAD GROUPS ================= */
+
+async function loadGroups(autoSelect=null){
+
+  await getCurrentUser();
+
+  const res = await fetch(groupAPI,{
+    credentials:"include"
+  });
+
+  const groups = await res.json();
+
+  const list = document.getElementById("groupList");
+
+  list.innerHTML = "";
+
+  groups.forEach(g=>{
+
+    const isMember =
+      Array.isArray(g.members) &&
+      g.members.includes(currentUser);
+
+    const div = document.createElement("div");
+
+    div.className = "group-item";
+
+    div.innerHTML = `
+      <span>${g.name}</span>
+
+      ${
+        !isMember
+        ? `<button class="join-btn" data-id="${g.group_id}">Join</button>`
+        : ""
+      }
+    `;
+
+    div.onclick = e=>{
+
+      if(e.target.classList.contains("join-btn")) return;
+
+      if(isMember){
+        selectGroup(g.group_id,div);
+      }
+    };
+
+    list.appendChild(div);
+
+    if(autoSelect && g.group_id===autoSelect){
+      selectGroup(g.group_id,div);
+    }
+
+  });
+
+}
+
+
+/* ================= CREATE GROUP ================= */
+
+document
+.getElementById("createGroupBtn")
+.addEventListener("click",async()=>{
+
+  const input = document.getElementById("newGroupName");
+
+  const name = input.value.trim();
+
+  if(!name){
+    alert("Enter group name");
+    return;
+  }
+
+  const res = await fetch(groupAPI,{
+
+    method:"POST",
+
+    credentials:"include",
+
+    headers:{
+      "Content-Type":"application/json",
+      "X-CSRFToken":csrftoken
+    },
+
+    body:JSON.stringify({
+      name:name
+    })
+
+  });
+
+  if(!res.ok){
+    alert("Create failed");
+    return;
+  }
+
+  input.value = "";
+
+  loadGroups();
+
+});
+
+
+/* ================= JOIN ================= */
+
+document.addEventListener("click",async e=>{
+
+  if(!e.target.classList.contains("join-btn")) return;
+
+  const id = e.target.dataset.id;
+
+  const res = await fetch(`${groupAPI}${id}/join/`,{
+
+    method:"POST",
+
+    credentials:"include",
+
+    headers:{
+      "X-CSRFToken":csrftoken
+    }
+
+  });
+
+  if(res.ok){
+    loadGroups(id);
+  }else{
+    alert("Join failed");
+  }
+
+});
+
+
+/* ================= SELECT GROUP ================= */
+
+function selectGroup(id,el){
+
+  currentGroupId = id;
+
+  document
+  .querySelectorAll(".group-item")
+  .forEach(i=>i.classList.remove("active"));
+
+  el.classList.add("active");
+
+  loadMessages();
+
+  if(refreshTimer) clearInterval(refreshTimer);
+
+  refreshTimer = setInterval(loadMessages,2000);
+
+}
+
+
+/* ================= LOAD MESSAGES ================= */
+
+async function loadMessages(){
+
+  if(!currentGroupId) return;
+
+  const res = await fetch(
+    `${messageAPI}?group=${currentGroupId}`,
+    {credentials:"include"}
+  );
+
+  if(!res.ok) return;
+
+  const msgs = await res.json();
+
+  const box = document.getElementById("messages");
+
+  box.innerHTML = "";
+
+  msgs.forEach(m=>{
+
+    const isSender = m.is_sender;
+
+    const isDeleted =
+      m.messages==="This message is deleted";
+
+    let html="";
+
+    if(isDeleted && !isSender){
+
+      html=`
+        <div class="message deleted">
+          <b>${m.sender}</b>: This message is deleted
+        </div>
+      `;
+
+    }else{
+
+      html=`
+        <div class="message">
+
+          <b>${m.sender}</b>: ${m.messages}
+
+          ${
+            isSender && !isDeleted
+            ? `<button class="delete-btn" data-id="${m.id}">Delete</button>`
+            : ""
+          }
+
+        </div>
+      `;
+
+    }
+
+    box.innerHTML += html;
+
+  });
+
+  box.scrollTop = box.scrollHeight;
+
+}
+
+
+/* ================= SEND ================= */
+
+document
+.getElementById("messageForm")
+.addEventListener("submit",async e=>{
+
+  e.preventDefault();
+
+  if(!currentGroupId){
+    alert("Join group first");
+    return;
+  }
+
+  const input = document.getElementById("messageText");
+
+  const text = input.value.trim();
+
+  if(!text) return;
+
+  const res = await fetch(messageAPI,{
+
+    method:"POST",
+
+    credentials:"include",
+
+    headers:{
+      "Content-Type":"application/json",
+      "X-CSRFToken":csrftoken
+    },
+
+    body:JSON.stringify({
+      group:currentGroupId,
+      content:text
+    })
+
+  });
+
+  if(!res.ok){
+    alert("Send failed");
+    return;
+  }
+
+  input.value="";
+
+  loadMessages();
+
+});
+
+
+/* ================= DELETE ================= */
+
+document
+.getElementById("messages")
+.addEventListener("click",async e=>{
+
+  if(!e.target.classList.contains("delete-btn")) return;
+
+  if(!confirm("Delete message?")) return;
+
+  const id = e.target.dataset.id;
+
+  const res = await fetch(`${messageAPI}${id}/`,{
+
+    method:"DELETE",
+
+    credentials:"include",
+
+    headers:{
+      "X-CSRFToken":csrftoken
+    }
+
+  });
+
+  if(!res.ok){
+    alert("Delete failed");
+    return;
+  }
+
+  loadMessages();
+
+});
+
+
+/* ================= INIT ================= */
+
+loadGroups();
+
+</script>
+
+</body>
+</html>
+

@@ -1,0 +1,378 @@
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Chat App</title>
+
+<style>
+body {
+  font-family: Arial, sans-serif;
+  background: #f2f2f2;
+  margin: 0;
+}
+
+.container {
+  display: flex;
+  max-width: 1000px;
+  height: 600px;
+  margin: 40px auto;
+  background: #fff;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 0 10px rgba(0,0,0,0.2);
+}
+
+.sidebar {
+  width: 250px;
+  border-right: 1px solid #ddd;
+  background: #fafafa;
+}
+
+.sidebar h2 {
+  text-align: center;
+  padding: 10px;
+  margin: 0;
+  border-bottom: 1px solid #ddd;
+}
+
+.chat-item {
+  padding: 10px;
+  cursor: pointer;
+  border-bottom: 1px solid #eee;
+}
+
+.chat-item:hover { background: #f0f0f0; }
+.chat-item.active { background: #007bff; color: white; }
+
+.chat-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.messages {
+  flex: 1;
+  padding: 10px;
+  overflow-y: auto;
+  background: #f9f9f9;
+}
+
+.message {
+  margin-bottom: 8px;
+  position: relative;
+  padding-right: 70px;
+}
+
+.delete-btn {
+  position: absolute;
+  right: 5px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: red;
+  color: white;
+  border: none;
+  padding: 3px 6px;
+  cursor: pointer;
+  border-radius: 3px;
+  font-size: 12px;
+}
+
+.deleted {
+  color: gray;
+  font-style: italic;
+}
+
+form {
+  display: flex;
+  padding: 10px;
+  border-top: 1px solid #ddd;
+}
+
+form input {
+  flex: 1;
+  padding: 8px;
+}
+
+form button {
+  padding: 8px 15px;
+  margin-left: 10px;
+}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+  <div class="sidebar">
+    <h2>Your Chats</h2>
+    <div id="chatList">Loading...</div>
+  </div>
+
+  <div class="chat-area">
+
+    <div class="messages" id="messages">
+      Select a chat
+    </div>
+
+    <form id="messageForm">
+      <input type="text" id="messageText" placeholder="Type message" required>
+      <button type="submit">Send</button>
+    </form>
+
+  </div>
+
+</div>
+
+<script>
+
+const backend = "http://127.0.0.1:8000";
+let currentChatId = null;
+let refreshTimer = null;
+
+// CHANGE THIS TO LOGGED USER
+const currentUser = "bilal";
+
+
+/* ================= CSRF ================= */
+
+function getCookie(name) {
+  let value = null;
+
+  if (document.cookie) {
+    document.cookie.split(";").forEach(c => {
+      c = c.trim();
+      if (c.startsWith(name + "=")) {
+        value = decodeURIComponent(c.substring(name.length + 1));
+      }
+    });
+  }
+
+  return value;
+}
+
+const csrftoken = getCookie("csrftoken");
+
+
+/* ================= LOAD CHATS ================= */
+
+async function loadChats() {
+
+  try {
+
+    const res = await fetch(`${backend}/chat/chats/`, {
+      credentials: "include"
+    });
+
+    if (!res.ok) {
+      alert("Login required");
+      return;
+    }
+
+    const chats = await res.json();
+
+    const list = document.getElementById("chatList");
+
+    list.innerHTML = "";
+
+    chats.forEach(chat => {
+
+      const div = document.createElement("div");
+
+      div.className = "chat-item";
+
+      div.innerText = `${chat.user1} & ${chat.user2}`;
+
+      div.onclick = () => selectChat(chat.chatid, div);
+
+      list.appendChild(div);
+
+    });
+
+  } catch (err) {
+    console.log("Chat load error:", err);
+  }
+
+}
+
+
+/* ================= SELECT CHAT ================= */
+
+function selectChat(chatId, el) {
+
+  currentChatId = chatId;
+
+  document.querySelectorAll(".chat-item")
+    .forEach(i => i.classList.remove("active"));
+
+  el.classList.add("active");
+
+  loadMessages();
+
+  if (refreshTimer) clearInterval(refreshTimer);
+
+  refreshTimer = setInterval(loadMessages, 5000);
+}
+
+
+/* ================= LOAD MESSAGES ================= */
+
+async function loadMessages() {
+
+  if (!currentChatId) return;
+
+  try {
+
+    const res = await fetch(
+      `${backend}/chat/messages/?chatid=${currentChatId}`,
+      { credentials: "include" }
+    );
+
+    if (!res.ok) return;
+
+    const msgs = await res.json();
+
+    const box = document.getElementById("messages");
+
+    box.innerHTML = "";
+
+    msgs.forEach(m => {
+
+      let html = "";
+
+      // RECEIVER VIEW
+      if (m.messages === "This message was deleted" && m.sender !== currentUser) {
+
+        html = `
+          <div class="message deleted">
+            This message was deleted
+          </div>
+        `;
+
+      }
+
+      // NORMAL MESSAGE
+      else {
+
+        html = `
+          <div class="message">
+            <b>${m.sender}</b>: ${m.messages}
+
+            ${
+              m.messages !== "This message was deleted"
+              ? `<button class="delete-btn" data-id="${m.id}">Delete</button>`
+              : ""
+            }
+
+          </div>
+        `;
+      }
+
+      box.innerHTML += html;
+
+    });
+
+    box.scrollTop = box.scrollHeight;
+
+  } catch (err) {
+    console.log("Message load error:", err);
+  }
+
+}
+
+
+/* ================= SEND MESSAGE ================= */
+
+document.getElementById("messageForm")
+.addEventListener("submit", async e => {
+
+  e.preventDefault();
+
+  const text = document.getElementById("messageText").value.trim();
+
+  if (!text || !currentChatId) return;
+
+  try {
+
+    const res = await fetch(`${backend}/chat/messages/`, {
+
+      method: "POST",
+
+      credentials: "include",
+
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRFToken": csrftoken
+      },
+
+      body: JSON.stringify({
+        chat: currentChatId,
+        content: text
+      })
+
+    });
+
+    if (!res.ok) {
+      alert("Send failed");
+      return;
+    }
+
+    document.getElementById("messageText").value = "";
+
+    loadMessages();
+
+  } catch (err) {
+    console.log("Send error:", err);
+  }
+
+});
+
+
+/* ================= DELETE MESSAGE ================= */
+
+document.getElementById("messages")
+.addEventListener("click", async e => {
+
+  if (!e.target.classList.contains("delete-btn")) return;
+
+  if (!confirm("Delete this message?")) return;
+
+  const msgId = e.target.dataset.id;
+
+  try {
+
+    const res = await fetch(
+      `${backend}/chat/messages/${msgId}/`,
+      {
+        method: "DELETE",
+        credentials: "include",
+        headers: {
+          "X-CSRFToken": csrftoken
+        }
+      }
+    );
+
+    if (!res.ok) {
+      alert("Delete failed");
+      return;
+    }
+
+    loadMessages();
+
+  } catch (err) {
+    console.log("Delete error:", err);
+  }
+
+});
+
+
+/* ================= START ================= */
+
+loadChats();
+
+</script>
+
+</body>
+</html>
