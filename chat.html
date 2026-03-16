@@ -1,378 +1,332 @@
-
-
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
 <meta charset="UTF-8">
-<title>Chat App</title>
-
+<title>Django WebSocket Chat</title>
 <style>
 body {
-  font-family: Arial, sans-serif;
-  background: #f2f2f2;
-  margin: 0;
+    font-family: Arial;
+    margin: 0;
+    background: #f2f2f2;
 }
-
 .container {
-  display: flex;
-  max-width: 1000px;
-  height: 600px;
-  margin: 40px auto;
-  background: #fff;
-  border-radius: 8px;
-  overflow: hidden;
-  box-shadow: 0 0 10px rgba(0,0,0,0.2);
+    display: flex;
+    width: 1000px;
+    height: 600px;
+    margin: 40px auto;
+    background: white;
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 0 10px rgba(0,0,0,0.2);
 }
-
 .sidebar {
-  width: 250px;
-  border-right: 1px solid #ddd;
-  background: #fafafa;
+    width: 250px;
+    border-right: 1px solid #ddd;
+    background: #fafafa;
 }
-
 .sidebar h2 {
-  text-align: center;
-  padding: 10px;
-  margin: 0;
-  border-bottom: 1px solid #ddd;
+    margin: 0;
+    padding: 10px;
+    border-bottom: 1px solid #ddd;
+    text-align: center;
 }
-
 .chat-item {
-  padding: 10px;
-  cursor: pointer;
-  border-bottom: 1px solid #eee;
+    padding: 10px;
+    cursor: pointer;
+    border-bottom: 1px solid #eee;
 }
-
-.chat-item:hover { background: #f0f0f0; }
-.chat-item.active { background: #007bff; color: white; }
-
+.chat-item:hover {
+    background: #eee;
+}
+.chat-item.active {
+    background: #007bff;
+    color: white;
+}
 .chat-area {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
 }
-
 .messages {
-  flex: 1;
-  padding: 10px;
-  overflow-y: auto;
-  background: #f9f9f9;
+    flex: 1;
+    padding: 10px;
+    overflow-y: auto;
+    background: #f9f9f9;
 }
-
 .message {
-  margin-bottom: 8px;
-  position: relative;
-  padding-right: 70px;
+    margin-bottom: 10px;
 }
-
-.delete-btn {
-  position: absolute;
-  right: 5px;
-  top: 50%;
-  transform: translateY(-50%);
-  background: red;
-  color: white;
-  border: none;
-  padding: 3px 6px;
-  cursor: pointer;
-  border-radius: 3px;
-  font-size: 12px;
+.message img {
+    max-width: 250px;
+    margin-top: 5px;
+    border-radius: 5px;
 }
-
-.deleted {
-  color: gray;
-  font-style: italic;
+.message audio {
+    margin-top: 5px;
+    width: 250px;
 }
-
+.deleteBtn {
+    margin-left: 10px;
+    background: red;
+    color: white;
+    border: none;
+    cursor: pointer;
+    padding: 3px 6px;
+    font-size: 12px;
+    border-radius: 3px;
+}
 form {
-  display: flex;
-  padding: 10px;
-  border-top: 1px solid #ddd;
+    display: flex;
+    gap: 5px;
+    padding: 10px;
+    border-top: 1px solid #ddd;
 }
-
-form input {
-  flex: 1;
-  padding: 8px;
+form input[type="text"] {
+    flex: 1;
+    padding: 8px;
 }
-
-form button {
-  padding: 8px 15px;
-  margin-left: 10px;
+#recordBtn {
+    background: #28a745;
+    color: white;
+    border: none;
+    padding: 8px 12px;
+    cursor: pointer;
+    border-radius: 5px;
+}
+#recordBtn.recording {
+    background: red;
 }
 </style>
 </head>
 
 <body>
-
 <div class="container">
 
-  <div class="sidebar">
-    <h2>Your Chats</h2>
-    <div id="chatList">Loading...</div>
-  </div>
+<div class="sidebar">
+<h2>Your Chats</h2>
+<div id="chatList">Loading chats...</div>
+</div>
 
-  <div class="chat-area">
+<div class="chat-area">
+<div class="messages" id="messages">Select a chat</div>
 
-    <div class="messages" id="messages">
-      Select a chat
-    </div>
+<form id="messageForm">
+<input id="messageText" type="text" placeholder="Type message">
+<input id="imageInput" type="file" accept="image/*">
+<button type="submit">Send</button>
+</form>
 
-    <form id="messageForm">
-      <input type="text" id="messageText" placeholder="Type message" required>
-      <button type="submit">Send</button>
-    </form>
-
-  </div>
-
+<div style="padding:10px;border-top:1px solid #ddd">
+<button id="recordBtn">Record Audio</button>
+</div>
+</div>
 </div>
 
 <script>
-
 const backend = "http://127.0.0.1:8000";
+const wsPort = 9003;
+
+let currentUser = null;
 let currentChatId = null;
-let refreshTimer = null;
+let currentReceiver = null;
+let ws = null;
+let mediaRecorder;
+let audioChunks = [];
 
-// CHANGE THIS TO LOGGED USER
-const currentUser = "bilal";
-
-
-/* ================= CSRF ================= */
-
-function getCookie(name) {
-  let value = null;
-
-  if (document.cookie) {
-    document.cookie.split(";").forEach(c => {
-      c = c.trim();
-      if (c.startsWith(name + "=")) {
-        value = decodeURIComponent(c.substring(name.length + 1));
-      }
-    });
-  }
-
-  return value;
+// ------------------- GET CURRENT USER -------------------
+async function getCurrentUser() {
+    try {
+        const res = await fetch(`${backend}/auth/current_user/`, {credentials:"include"});
+        if(!res.ok) throw new Error("Cannot fetch current user");
+        const data = await res.json();
+        currentUser = data.username;
+    } catch(e) {
+        console.error(e);
+        alert("Please login first");
+    }
 }
 
-const csrftoken = getCookie("csrftoken");
-
-
-/* ================= LOAD CHATS ================= */
-
+// ------------------- LOAD CHATS -------------------
 async function loadChats() {
-
-  try {
-
-    const res = await fetch(`${backend}/chat/chats/`, {
-      credentials: "include"
-    });
-
-    if (!res.ok) {
-      alert("Login required");
-      return;
-    }
-
-    const chats = await res.json();
-
-    const list = document.getElementById("chatList");
-
-    list.innerHTML = "";
-
-    chats.forEach(chat => {
-
-      const div = document.createElement("div");
-
-      div.className = "chat-item";
-
-      div.innerText = `${chat.user1} & ${chat.user2}`;
-
-      div.onclick = () => selectChat(chat.chatid, div);
-
-      list.appendChild(div);
-
-    });
-
-  } catch (err) {
-    console.log("Chat load error:", err);
-  }
-
-}
-
-
-/* ================= SELECT CHAT ================= */
-
-function selectChat(chatId, el) {
-
-  currentChatId = chatId;
-
-  document.querySelectorAll(".chat-item")
-    .forEach(i => i.classList.remove("active"));
-
-  el.classList.add("active");
-
-  loadMessages();
-
-  if (refreshTimer) clearInterval(refreshTimer);
-
-  refreshTimer = setInterval(loadMessages, 5000);
-}
-
-
-/* ================= LOAD MESSAGES ================= */
-
-async function loadMessages() {
-
-  if (!currentChatId) return;
-
-  try {
-
-    const res = await fetch(
-      `${backend}/chat/messages/?chatid=${currentChatId}`,
-      { credentials: "include" }
-    );
-
-    if (!res.ok) return;
-
-    const msgs = await res.json();
-
-    const box = document.getElementById("messages");
-
-    box.innerHTML = "";
-
-    msgs.forEach(m => {
-
-      let html = "";
-
-      // RECEIVER VIEW
-      if (m.messages === "This message was deleted" && m.sender !== currentUser) {
-
-        html = `
-          <div class="message deleted">
-            This message was deleted
-          </div>
-        `;
-
-      }
-
-      // NORMAL MESSAGE
-      else {
-
-        html = `
-          <div class="message">
-            <b>${m.sender}</b>: ${m.messages}
-
-            ${
-              m.messages !== "This message was deleted"
-              ? `<button class="delete-btn" data-id="${m.id}">Delete</button>`
-              : ""
-            }
-
-          </div>
-        `;
-      }
-
-      box.innerHTML += html;
-
-    });
-
-    box.scrollTop = box.scrollHeight;
-
-  } catch (err) {
-    console.log("Message load error:", err);
-  }
-
-}
-
-
-/* ================= SEND MESSAGE ================= */
-
-document.getElementById("messageForm")
-.addEventListener("submit", async e => {
-
-  e.preventDefault();
-
-  const text = document.getElementById("messageText").value.trim();
-
-  if (!text || !currentChatId) return;
-
-  try {
-
-    const res = await fetch(`${backend}/chat/messages/`, {
-
-      method: "POST",
-
-      credentials: "include",
-
-      headers: {
-        "Content-Type": "application/json",
-        "X-CSRFToken": csrftoken
-      },
-
-      body: JSON.stringify({
-        chat: currentChatId,
-        content: text
-      })
-
-    });
-
-    if (!res.ok) {
-      alert("Send failed");
-      return;
-    }
-
-    document.getElementById("messageText").value = "";
-
-    loadMessages();
-
-  } catch (err) {
-    console.log("Send error:", err);
-  }
-
-});
-
-
-/* ================= DELETE MESSAGE ================= */
-
-document.getElementById("messages")
-.addEventListener("click", async e => {
-
-  if (!e.target.classList.contains("delete-btn")) return;
-
-  if (!confirm("Delete this message?")) return;
-
-  const msgId = e.target.dataset.id;
-
-  try {
-
-    const res = await fetch(
-      `${backend}/chat/messages/${msgId}/`,
-      {
-        method: "DELETE",
-        credentials: "include",
-        headers: {
-          "X-CSRFToken": csrftoken
+    try {
+        const res = await fetch(`${backend}/chat/chats/`, {credentials:"include"});
+        if(!res.ok) throw new Error("Cannot load chats");
+        const chats = await res.json();
+        const list = document.getElementById("chatList");
+        list.innerHTML = "";
+        if(chats.length === 0){
+            list.innerHTML = "<i>No chats found</i>";
+            return;
         }
-      }
-    );
+        chats.forEach(chat => {
+            const div = document.createElement("div");
+            div.className = "chat-item";
+            div.innerText = `${chat.user1_username} & ${chat.user2_username}`;
+            div.onclick = () => selectChat(chat.chatid, div, chat.user1_username, chat.user2_username);
+            list.appendChild(div);
+        });
+    } catch(e) {
+        console.error(e);
+        document.getElementById("chatList").innerHTML = "<i>Error loading chats</i>";
+    }
+}
 
-    if (!res.ok) {
-      alert("Delete failed");
-      return;
+// ------------------- SELECT CHAT -------------------
+function selectChat(chatId, el, user1, user2) {
+    currentChatId = chatId;
+    currentReceiver = (user1 === currentUser) ? user2 : user1;
+    document.querySelectorAll(".chat-item").forEach(i => i.classList.remove("active"));
+    el.classList.add("active");
+    connectWebSocket();
+}
+
+// ------------------- CONNECT WEBSOCKET -------------------
+function connectWebSocket() {
+    if(!currentChatId) return;
+    if(ws) ws.close();
+    ws = new WebSocket(`ws://127.0.0.1:${wsPort}/ws/chat/${currentChatId}/`);
+    ws.onopen = () => console.log("WebSocket connected");
+    ws.onerror = e => console.error("WebSocket error", e);
+    ws.onmessage = e => {
+        const data = JSON.parse(e.data);
+        if(data.action === "delete"){
+            const msgDiv = document.getElementById("msg-"+data.message_id);
+            if(msgDiv) msgDiv.innerHTML = "<i>This message was deleted</i>";
+            return;
+        }
+        addMessageToUI(data);
+    };
+    loadMessages();
+}
+
+// ------------------- ADD MESSAGE TO UI -------------------
+function addMessageToUI(data){
+    const box = document.getElementById("messages");
+    const div = document.createElement("div");
+    div.className = "message";
+    div.id = "msg-"+data.message_id;
+    div.dataset.sender = data.sender;
+
+    let text = data.message || data.content || "";
+    if(data.deleted) text = "<i>This message was deleted</i>";
+
+    let html = `<b>${data.sender}</b>: ${text}`;
+
+    if(data.image){
+        let imgSrc = data.image.startsWith("http") ? data.image : `${backend}${data.image}`;
+        html += `<br><img src="${imgSrc}">`;
     }
 
-    loadMessages();
+    if(data.audio){
+        let audioSrc = data.audio.startsWith("http") ? data.audio : `${backend}${data.audio}`;
+        html += `<br><audio controls src="${audioSrc}"></audio>`;
+    }
 
-  } catch (err) {
-    console.log("Delete error:", err);
-  }
+    if(data.sender === currentUser && !data.deleted){
+        html += ` <button class="deleteBtn" onclick="deleteMessage(${data.message_id})">Delete</button>`;
+    }
 
+    div.innerHTML = html;
+    box.appendChild(div);
+    box.scrollTop = box.scrollHeight;
+}
+
+// ------------------- DELETE MESSAGE -------------------
+function deleteMessage(message_id){
+    if(!ws) return;
+    ws.send(JSON.stringify({action:"delete", message_id:message_id}));
+}
+
+// ------------------- LOAD OLD MESSAGES -------------------
+async function loadMessages(){
+    if(!currentChatId) return;
+    try {
+        const res = await fetch(`${backend}/chat/messages/?chatid=${currentChatId}`, {credentials:"include"});
+        if(!res.ok) throw new Error("Cannot load messages");
+        const msgs = await res.json();
+        const box = document.getElementById("messages");
+        box.innerHTML = "";
+        msgs.forEach(msg => {
+            // Fix URLs for image/audio
+            if(msg.image && !msg.image.startsWith("http")) msg.image = `${backend}${msg.image}`;
+            if(msg.audio && !msg.audio.startsWith("http")) msg.audio = `${backend}${msg.audio}`;
+            addMessageToUI(msg);
+        });
+    } catch(e) { console.error(e); }
+}
+
+// ------------------- SEND IMAGE -------------------
+function sendImage(file){
+    const reader = new FileReader();
+    reader.onload = e => {
+        ws.send(JSON.stringify({
+            image: e.target.result,
+            sender: currentUser,
+            receiver: currentReceiver
+        }));
+    };
+    reader.readAsDataURL(file);
+}
+
+// ------------------- SEND AUDIO -------------------
+function sendAudio(blob){
+    const reader = new FileReader();
+    reader.onloadend = () => {
+        ws.send(JSON.stringify({
+            audio: reader.result,
+            sender: currentUser,
+            receiver: currentReceiver
+        }));
+    };
+    reader.readAsDataURL(blob);
+}
+
+// ------------------- SEND MESSAGE -------------------
+document.getElementById("messageForm").addEventListener("submit", e=>{
+    e.preventDefault();
+    if(!currentChatId){ alert("Select a chat"); return; }
+    const text = document.getElementById("messageText").value.trim();
+    const image = document.getElementById("imageInput").files[0];
+    if(text){
+        ws.send(JSON.stringify({message:text,sender:currentUser,receiver:currentReceiver}));
+    }
+    if(image) sendImage(image);
+    document.getElementById("messageText").value="";
+    document.getElementById("imageInput").value="";
 });
 
+// ------------------- AUDIO RECORD -------------------
+const recordBtn = document.getElementById("recordBtn");
+recordBtn.onclick = async () => {
+    if(recordBtn.classList.contains("recording")){
+        mediaRecorder.stop();
+        recordBtn.classList.remove("recording");
+        recordBtn.innerText = "Record Audio";
+    } else {
+        const stream = await navigator.mediaDevices.getUserMedia({audio:true});
+        mediaRecorder = new MediaRecorder(stream);
+        audioChunks = [];
+        mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+        mediaRecorder.onstop = () => {
+            const blob = new Blob(audioChunks,{type:"audio/webm"});
+            sendAudio(blob);
+        };
+        mediaRecorder.start();
+        recordBtn.classList.add("recording");
+        recordBtn.innerText = "Stop Recording";
+    }
+};
 
-/* ================= START ================= */
+// ------------------- START -------------------
+(async()=>{
+    await getCurrentUser();
+    await loadChats();
+})();  
 
-loadChats();
+
+
+
 
 </script>
-
 </body>
 </html>

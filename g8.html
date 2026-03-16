@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Django Group Chat</title>
+
+<style>
+body{
+    font-family: Arial;
+    margin: 0;
+    background: #f2f2f2;
+}
+.container{
+    display: flex;
+    width: 1000px;
+    height: 600px;
+    margin: 40px auto;
+    background: white;
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 0 10px rgba(0,0,0,0.2);
+}
+.sidebar{
+    width: 250px;
+    border-right: 1px solid #ddd;
+    background: #fafafa;
+}
+.sidebar h2{
+    margin: 0;
+    padding: 10px;
+    border-bottom: 1px solid #ddd;
+    text-align: center;
+}
+.group-item{
+    padding: 10px;
+    cursor: pointer;
+    border-bottom: 1px solid #eee;
+}
+.group-item:hover{
+    background: #eee;
+}
+.group-item.active{
+    background: #007bff;
+    color: white;
+}
+.chat-area{
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+}
+.messages{
+    flex: 1;
+    padding: 10px;
+    overflow-y: auto;
+    background: #f9f9f9;
+}
+.message{
+    margin-bottom: 10px;
+}
+.message img{
+    max-width: 250px;
+    display: block;
+    margin-top: 5px;
+}
+.message audio{
+    margin-top: 5px;
+    width: 250px;
+}
+form{
+    display: flex;
+    gap: 5px;
+    padding: 10px;
+    border-top: 1px solid #ddd;
+}
+form input[type="text"]{
+    flex: 1;
+    padding: 8px;
+}
+#recordBtn{
+    background: #28a745;
+    color: white;
+    border: none;
+    padding: 8px 12px;
+    cursor: pointer;
+    border-radius: 5px;
+}
+#recordBtn.recording{
+    background: red;
+}
+#groupForm{
+    display: flex;
+    gap: 5px;
+    padding: 10px;
+}
+#joinLeaveBtn{
+    margin: 10px;
+    padding: 5px 10px;
+    border-radius: 5px;
+    cursor: pointer;
+}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+<div class="sidebar">
+    <h2>Groups</h2>
+
+    <form id="groupForm">
+        <input type="text" id="newGroupName" placeholder="New group name">
+        <button type="submit">Create Group</button>
+    </form>
+
+    <div id="groupList">Loading groups...</div>
+</div>
+
+<div class="chat-area">
+    <div id="messages" class="messages">Select a group</div>
+
+    <button id="joinLeaveBtn" style="display:none;">Join Group</button>
+
+    <form id="messageForm">
+        <input id="messageText" type="text" placeholder="Type message">
+        <input id="imageInput" type="file" accept="image/*">
+        <button type="submit">Send</button>
+    </form>
+
+    <div style="padding:10px;border-top:1px solid #ddd">
+        <button id="recordBtn">Record Audio</button>
+    </div>
+</div>
+
+<script>
+const backend = "http://127.0.0.1:8000"
+const wsPort = 9003
+
+let ws = null
+let currentGroup = null
+let joinedGroups = []
+
+let mediaRecorder
+let audioBlob = null
+let chunks = []
+
+// ---------------- CSRF ----------------
+function getCookie(name){
+    let cookieValue = null
+    if(document.cookie && document.cookie !== ""){
+        const cookies = document.cookie.split(";")
+        for(let i=0;i<cookies.length;i++){
+            const cookie = cookies[i].trim()
+            if(cookie.startsWith(name + "=")){
+                cookieValue = decodeURIComponent(cookie.substring(name.length + 1))
+                break
+            }
+        }
+    }
+    return cookieValue
+}
+
+// ---------------- LOAD GROUPS ----------------
+async function loadGroups(){
+    const res = await fetch(`${backend}/groupchat/groups/`, {credentials:"include"})
+    let data = await res.json()
+    if(data.results) data = data.results
+
+    const list = document.getElementById("groupList")
+    list.innerHTML = ""
+
+    data.forEach(g => {
+        const div = document.createElement("div")
+        div.className = "group-item"
+        div.innerText = g.name
+
+        div.onclick = () => selectGroup(g.group_id, div)
+
+        list.appendChild(div)
+    })
+}
+
+// ---------------- SELECT GROUP ----------------
+function selectGroup(id, el){
+    currentGroup = id
+    document.querySelectorAll(".group-item").forEach(x => x.classList.remove("active"))
+    el.classList.add("active")
+
+    // show join/leave button
+    const joinLeaveBtn = document.getElementById("joinLeaveBtn")
+    joinLeaveBtn.style.display = "inline-block"
+
+    if(joinedGroups.includes(currentGroup)){
+        joinLeaveBtn.innerText = "Leave Group"
+        connectWS()
+        loadMessages()
+    }else{
+        joinLeaveBtn.innerText = "Join Group"
+        document.getElementById("messages").innerHTML = "You need to join this group to see messages"
+        if(ws){ ws.close(); ws=null }
+    }
+}
+
+// ---------------- JOIN / LEAVE ----------------
+const joinLeaveBtn = document.getElementById("joinLeaveBtn")
+joinLeaveBtn.onclick = async () => {
+    if(!currentGroup) return;
+
+    const isJoined = joinedGroups.includes(currentGroup)
+    const url = isJoined
+        ? `${backend}/groupchat/groups/${currentGroup}/leave/`
+        : `${backend}/groupchat/groups/${currentGroup}/join/`
+
+    try{
+        const res = await fetch(url,{
+            method:"POST",
+            credentials:"include",
+            headers:{
+                "Content-Type":"application/json",
+                "X-CSRFToken": getCookie("csrftoken")
+            }
+        })
+
+        if(!res.ok){ alert("Request failed"); return }
+
+        if(isJoined){
+            joinedGroups = joinedGroups.filter(g => g !== currentGroup)
+            joinLeaveBtn.innerText = "Join Group"
+            document.getElementById("messages").innerHTML = "You left this group"
+            if(ws){ ws.close(); ws=null }
+        }else{
+            joinedGroups.push(currentGroup)
+            joinLeaveBtn.innerText = "Leave Group"
+            connectWS()
+            loadMessages()
+        }
+    }catch(err){
+        console.log(err)
+        alert("Something went wrong while updating group membership")
+    }
+}
+
+// ---------------- CREATE GROUP ----------------
+document.getElementById("groupForm").onsubmit = async e => {
+    e.preventDefault()
+    const name = document.getElementById("newGroupName").value.trim()
+    if(!name){ alert("Enter group name"); return }
+
+    try{
+        const res = await fetch(`${backend}/groupchat/groups/`,{
+            method:"POST",
+            credentials:"include",
+            headers:{
+                "Content-Type":"application/json",
+                "X-CSRFToken": getCookie("csrftoken")
+            },
+            body: JSON.stringify({name})
+        })
+
+        if(!res.ok){ alert("Failed to create group"); return }
+
+        document.getElementById("newGroupName").value = ""
+        loadGroups()
+    }catch(err){
+        console.log(err)
+        alert("Failed to create group")
+    }
+}
+
+// ---------------- CONNECT WEBSOCKET ----------------
+function connectWS(){
+    if(ws) ws.close()
+    ws = new WebSocket(`ws://127.0.0.1:${wsPort}/ws/group/${currentGroup}/`)
+
+    ws.onopen = () => { console.log("WebSocket connected") }
+
+    ws.onmessage = e => {
+        const data = JSON.parse(e.data)
+        addMessage(data)
+    }
+
+    ws.onerror = e => { console.log("WebSocket error", e) }
+
+    ws.onclose = () => { console.log("WebSocket closed") }
+}
+
+// ---------------- LOAD MESSAGES ----------------
+async function loadMessages(){
+    const res = await fetch(`${backend}/groupchat/groupmessages/?group=${currentGroup}`, {credentials:"include"})
+    let data = await res.json()
+    if(data.results) data = data.results
+
+    const box = document.getElementById("messages")
+    box.innerHTML = ""
+    data.forEach(m => addMessage(m))
+}
+
+// ---------------- ADD MESSAGE ----------------
+function addMessage(data){
+    const box = document.getElementById("messages")
+    const div = document.createElement("div")
+    div.className = "message"
+
+    let html = `<b>${data.sender}</b>: ${data.message || data.content || ""}`
+
+    if(data.image){
+        let img = data.image.startsWith("http") ? data.image : backend + data.image
+        html += `<br><img src="${img}">`
+    }
+
+    if(data.audio){
+        let audio = data.audio.startsWith("http") ? data.audio : backend + data.audio
+        html += `<br><audio controls src="${audio}"></audio>`
+    }
+
+    div.innerHTML = html
+    box.appendChild(div)
+    box.scrollTop = box.scrollHeight
+}
+
+// ---------------- SEND MESSAGE ----------------
+document.getElementById("messageForm").onsubmit = async e => {
+    e.preventDefault()
+    if(!ws || ws.readyState!==WebSocket.OPEN){ alert("WebSocket not connected"); return }
+
+    const text = document.getElementById("messageText").value.trim()
+    const imageFile = document.getElementById("imageInput").files[0]
+
+    let imageBase64 = null
+    let audioBase64 = null
+
+    if(imageFile){ imageBase64 = await fileToBase64(imageFile) }
+    if(audioBlob){ audioBase64 = await fileToBase64(audioBlob); audioBlob=null }
+
+    const payload = { message:text, image:imageBase64, audio:audioBase64 }
+    ws.send(JSON.stringify(payload))
+
+    document.getElementById("messageText").value=""
+    document.getElementById("imageInput").value=""
+}
+
+// ---------------- FILE → BASE64 ----------------
+function fileToBase64(file){
+    return new Promise(resolve => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(reader.result)
+        reader.readAsDataURL(file)
+    })
+}
+
+// ---------------- AUDIO RECORD ----------------
+const recordBtn = document.getElementById("recordBtn")
+recordBtn.onclick = async () => {
+    if(recordBtn.classList.contains("recording")){
+        mediaRecorder.stop()
+        recordBtn.classList.remove("recording")
+        recordBtn.innerText="Record Audio"
+    }else{
+        const stream = await navigator.mediaDevices.getUserMedia({audio:true})
+        mediaRecorder = new MediaRecorder(stream)
+        chunks=[]
+        mediaRecorder.ondataavailable = e => { chunks.push(e.data) }
+        mediaRecorder.onstop = () => { audioBlob = new Blob(chunks,{type:"audio/webm"}) }
+        mediaRecorder.start()
+        recordBtn.classList.add("recording")
+        recordBtn.innerText="Stop Recording"
+    }
+}
+
+// ---------------- INIT ----------------
+loadGroups()
+</script>
+
+</body>
+</html>
